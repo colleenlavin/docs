@@ -6,6 +6,7 @@ var cheerio = require('cheerio');
 var url = require('url');
 var util = require('util');
 var chalk = require('chalk');
+var xml2js = require('xml2js');
 var _ = require('lodash');
 
 // Ignore links to these hosts since they occasionally fail on CI
@@ -138,7 +139,12 @@ describe('Crawler', function() {
     }
     */
 
-    var crawler = new Crawler('localhost', '/', 8081);
+    const serverHost = 'localhost';
+    const serverPort = 8081;
+    const rootUrl = 'http://' + serverHost + ':' + serverPort;
+
+    var crawler = new Crawler(serverHost, '/', serverPort);
+
     crawler.maxConcurrency = 8;
     crawler.userAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/43.0.2357.134 Safari/537.36';
     crawler.acceptCookies = false;
@@ -190,6 +196,57 @@ describe('Crawler', function() {
       }
     });
 
+    crawler.checkSitemap = function(sitemapXmlPath) {
+      // console.log('checkSitemap', sitemapXmlPath);
+      xml2js.parseString(fs.readFileSync(sitemapXmlPath, 'utf8'), function (err, result) {
+        if (err) {
+          return err;
+        }
+        try {
+          const skipUrls = [
+            '/assets',
+            '/blurbs',
+            '/cards/libraries',
+          ];
+  
+          // result.urlset.url array of objects containing an array of .loc and an array of .priority. Each will only have one entry.
+          for(const urlEntry of result.urlset.url) {
+            const loc = urlEntry.loc[0];
+            // Example loc: https://docs.particle.io/datasheets/asset-tracking/tracker-som-eval-board/
+            const urlBase = 'https://docs.particle.io';
+            if (loc.startsWith(urlBase)) {
+              const urlRelative = loc.substr(urlBase.length);
+              let skip = false;
+  
+              for(const skipUrlStart of skipUrls) {
+                if (urlRelative.startsWith(skipUrlStart)) {
+                  skip = true;
+                  break;
+                }
+              }
+              if (!skip) {
+                crawler.queueURL(rootUrl + urlRelative);
+              }
+            }
+          }  
+        }
+        catch(e) {
+          console.log('excepting processing sitemap', e);
+        }
+
+      });
+    }
+
+    crawler.checkSitemaps = function() {
+      const sitemapsDir = path.join(__dirname, 'sitemaps');
+
+      for(const f of fs.readdirSync(sitemapsDir)) {
+        if (f.endsWith('.xml')) {
+          const p = path.join(sitemapsDir, f);
+          crawler.checkSitemap(p);      
+        }
+      }
+    };
 
     crawler.discoverResources = function(buf, queueItem) {
       // discoverResources takes a Buffer containing the page, a queueItem with the page metadata (URL, etc.)
@@ -387,7 +444,13 @@ describe('Crawler', function() {
     	  isWarning = true;
       }
       
-      var msg = util.format('%s ON %s CONTENT %s LINKS TO %s', queueItem.stateData.code, queueItem.referrer, queueItem.meta.content, queueItem.url);
+      var msg;
+      if (queueItem.meta) {
+        msg = util.format('%s ON %s CONTENT %s LINKS TO %s', queueItem.stateData.code, queueItem.referrer, queueItem.meta.content, queueItem.url);
+      }
+      else {
+        msg = util.format('%s ON LINKS TO %s', queueItem.stateData.code, queueItem.url);        
+      }
       if (isWarning) {
         console.log(chalk.yellow('WARN: ' + msg));
         return;
@@ -419,6 +482,7 @@ describe('Crawler', function() {
       return done();
     });
     crawler.start();
+    crawler.checkSitemaps();
   });
 
 });
